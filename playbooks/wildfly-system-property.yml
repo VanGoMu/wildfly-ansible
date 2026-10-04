@@ -37,10 +37,13 @@
 
     # standalone.xml declara un namespace que cambia entre versiones de WildFly: en la 35 es
     # urn:jboss:domain:community:20.0. Se lee del propio elemento <server> en vez de fijarlo aquí.
+    # no_log: con -v, slurp imprime el fichero entero en base64 (una línea de ~21.000 caracteres),
+    # y Run Command solo devuelve por API los primeros 24.000: tapaba el resto, PLAY RECAP incluido.
     - name: Leer standalone.xml
       ansible.builtin.slurp:
         src: "{{ wildfly_config }}"
       register: standalone_raw
+      no_log: true
 
     - name: Sacar el namespace del elemento server
       ansible.builtin.set_fact:
