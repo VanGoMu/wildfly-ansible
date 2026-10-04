@@ -1,0 +1,198 @@
+---
+# Release de configuración de WildFly: añade a standalone.xml la system property de la release.
+#
+# Lo ejecuta AWS-ApplyAnsiblePlaybooks en cada instancia, en local:
+#   ansible-playbook -i "localhost," -c local -e "release_tag=vX.Y.Z" \
+#     playbooks/wildfly-system-property.yml
+#
+# Los tres pasos de la release son: 1) parar WildFly, 2) añadir la system property a standalone.xml
+# y 3) levantar WildFly. Alrededor van una copia de seguridad, una verificación con el servidor en
+# marcha y un rescue que deja WildFly sirviendo con la configuración anterior si algo falla.
+#
+# Tags: «service» marca lo que necesita systemd y un WildFly en marcha. Con --skip-tags service se
+# prueba solo la edición del XML (lo que hace la validación local en un contenedor).
+- name: Release de configuración de WildFly
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: false
+  vars_files:
+    - vars/wildfly.yml
+
+  tasks:
+    - name: Comprobar que release_tag es una release vX.Y.Z
+      ansible.builtin.assert:
+        that:
+          - release_tag is defined
+          - release_tag is match('^v[0-9]+[.][0-9]+[.][0-9]+$')
+        fail_msg: "release_tag tiene que ser vX.Y.Z y ha llegado «{{ release_tag | default('') }}»"
+        quiet: true
+
+    # community.general.xml necesita lxml en el Python que ejecuta los módulos. El documento de SSM
+    # instala Ansible con pip, pero no lxml; en Amazon Linux 2023 viene como paquete del sistema.
+    - name: Instalar lxml para editar el XML
+      ansible.builtin.dnf:
+        name: python3-lxml
+        state: present
+
+    # standalone.xml declara un namespace que cambia entre versiones de WildFly: en la 35 es
+    # urn:jboss:domain:community:20.0. Se lee del propio elemento <server> en vez de fijarlo aquí.
+    - name: Leer standalone.xml
+      ansible.builtin.slurp:
+        src: "{{ wildfly_config }}"
+      register: standalone_raw
+
+    - name: Sacar el namespace del elemento server
+      ansible.builtin.set_fact:
+        wildfly_namespace: >-
+          {{ standalone_raw.content | b64decode
+             | regex_search('<server[^>]*xmlns="[^"]+"') | default('', true)
+             | regex_search('xmlns="[^"]+"') | default('', true)
+             | replace('xmlns=', '') | replace('"', '') }}
+
+    - name: Comprobar que standalone.xml tiene namespace de WildFly
+      ansible.builtin.assert:
+        that: wildfly_namespace is match('^urn:jboss:domain:')
+        fail_msg: "{{ wildfly_config }} no declara en <server> un namespace urn:jboss:domain:…"
+        quiet: true
+
+    # Si la propiedad ya tiene el valor de esta release no hay nada que hacer, y no se para WildFly:
+    # una ejecución repetida no provoca un corte.
+    - name: Mirar si la release ya está aplicada
+      community.general.xml:
+        path: "{{ wildfly_config }}"
+        xpath: >-
+          /s:server/s:system-properties/s:property[@name='{{ wildfly_property_name }}'
+          and @value='{{ release_tag }}']
+        namespaces:
+          s: "{{ wildfly_namespace }}"
+        count: true
+      register: release_applied
+
+    - name: Aplicar la release
+      when: release_applied.count == 0
+      block:
+        - name: Copiar standalone.xml antes de tocarlo
+          ansible.builtin.copy:
+            src: "{{ wildfly_config }}"
+            dest: "{{ wildfly_config }}.{{ release_tag }}.bak"
+            remote_src: true
+            owner: "{{ wildfly_user }}"
+            group: "{{ wildfly_user }}"
+            mode: "0644"
+
+        # Mientras corre, WildFly es dueño de standalone.xml y lo reescribe en cada operación de
+        # gestión: un cambio hecho con el servidor en marcha se perdería.
+        - name: 1 · Parar WildFly
+          ansible.builtin.systemd_service:
+            name: "{{ wildfly_service }}"
+            state: stopped
+          tags: [service]
+
+        - name: Contar el elemento system-properties
+          community.general.xml:
+            path: "{{ wildfly_config }}"
+            xpath: /s:server/s:system-properties
+            namespaces:
+              s: "{{ wildfly_namespace }}"
+            count: true
+          register: system_properties
+
+        # WildFly lee los hijos de <server> en un orden fijo, y system-properties va justo detrás de
+        # extensions. Si el módulo lo crease por su cuenta lo pondría al final y WildFly no
+        # arrancaría (WFLYCTL0198: Unexpected element). El hijo se pasa como XML con el namespace
+        # del fichero: sin él, el elemento quedaría fuera del namespace y WildFly tampoco lo
+        # reconocería. Sin pretty_print a propósito: reindentaría el fichero entero.
+        - name: 2 · Crear system-properties justo detrás de extensions
+          community.general.xml:
+            path: "{{ wildfly_config }}"
+            xpath: /s:server/s:extensions
+            namespaces:
+              s: "{{ wildfly_namespace }}"
+            insertafter: true
+            input_type: xml
+            add_children:
+              - '<system-properties xmlns="{{ wildfly_namespace }}"/>'
+          when: system_properties.count == 0
+
+        - name: 2 · Añadir la propiedad {{ wildfly_property_name }} a standalone.xml
+          community.general.xml:
+            path: "{{ wildfly_config }}"
+            xpath: /s:server/s:system-properties/s:property[@name='{{ wildfly_property_name }}']
+            namespaces:
+              s: "{{ wildfly_namespace }}"
+            attribute: value
+            value: "{{ release_tag }}"
+
+        # El módulo reescribe el fichero: se devuelve al usuario de WildFly, que tiene que poder
+        # escribir en él y en standalone_xml_history al arrancar.
+        - name: Devolver standalone.xml al usuario de WildFly
+          ansible.builtin.file:
+            path: "{{ wildfly_config }}"
+            owner: "{{ wildfly_user }}"
+            group: "{{ wildfly_user }}"
+
+        - name: 3 · Levantar WildFly
+          ansible.builtin.systemd_service:
+            name: "{{ wildfly_service }}"
+            state: started
+          tags: [service]
+
+        # systemctl start devuelve 0 en cuanto lanza el proceso, aunque WildFly no llegue a
+        # arrancar: lo que dice que la release funciona es la aplicación respondiendo.
+        - name: Esperar a que {{ wildfly_health_path }} responda 200
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:{{ wildfly_http_port }}{{ wildfly_health_path }}"
+            status_code: 200
+          register: health
+          until: health.status == 200
+          retries: "{{ wildfly_health_retries }}"
+          delay: "{{ wildfly_health_delay }}"
+          tags: [service]
+
+        # Se pregunta al servidor en marcha, no al fichero: así se comprueba que WildFly ha
+        # cargado la propiedad, no solo que está escrita.
+        - name: Leer {{ wildfly_property_name }} en el WildFly en marcha
+          ansible.builtin.command:
+            argv:
+              - "{{ wildfly_cli }}"
+              - --connect
+              - "--command=/system-property={{ wildfly_property_name }}:read-attribute(name=value)"
+          register: live_property
+          changed_when: false
+          failed_when: >-
+            live_property.rc != 0
+            or '"outcome" => "success"' not in live_property.stdout
+            or release_tag not in live_property.stdout
+          tags: [service]
+
+      rescue:
+        - name: Restaurar la copia de standalone.xml
+          ansible.builtin.copy:
+            src: "{{ wildfly_config }}.{{ release_tag }}.bak"
+            dest: "{{ wildfly_config }}"
+            remote_src: true
+            owner: "{{ wildfly_user }}"
+            group: "{{ wildfly_user }}"
+            mode: "0644"
+
+        - name: Arrancar WildFly con la configuración anterior
+          ansible.builtin.systemd_service:
+            name: "{{ wildfly_service }}"
+            state: restarted
+          tags: [service]
+
+        - name: Dar la release por fallida
+          ansible.builtin.fail:
+            msg: >-
+              La release {{ release_tag }} no se ha aplicado.
+              Falló «{{ ansible_failed_task.name }}»:
+              {{ ansible_failed_result.msg | default('sin mensaje') }}. standalone.xml está
+              restaurado y WildFly arrancado con la configuración anterior.
+
+    - name: Resumen
+      ansible.builtin.debug:
+        msg: >-
+          {{ wildfly_property_name }}={{ release_tag }}
+          {{ 'ya estaba aplicada: WildFly no se ha parado' if release_applied.count > 0
+             else 'aplicada en ' ~ wildfly_config }}

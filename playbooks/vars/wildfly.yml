@@ -1,0 +1,20 @@
+---
+# Dónde está WildFly y qué propiedad gestiona este repositorio. Los valores salen del stack base del
+# laboratorio aws-wildfly (plantillas/wildfly-ec2.yml): instalación en /opt/wildfly, usuario y
+# unidad systemd «wildfly», puerto 8080 y /health.
+wildfly_home: /opt/wildfly
+wildfly_config: "{{ wildfly_home }}/standalone/configuration/standalone.xml"
+wildfly_cli: "{{ wildfly_home }}/bin/jboss-cli.sh"
+wildfly_service: wildfly
+wildfly_user: wildfly
+wildfly_http_port: 8080
+wildfly_health_path: /health
+
+# La propiedad que deja cada release. Su valor es el tag (release_tag), así la JVM dice qué release
+# la configuró.
+wildfly_property_name: demo.release
+
+# Espera del arranque: 30 intentos cada 5 s, dos minutos y medio. Algo más que los 60 × 2 s que
+# espera cfn-init en el primer arranque, porque aquí la JVM arranca en frío tras el stop.
+wildfly_health_retries: 30
+wildfly_health_delay: 5
