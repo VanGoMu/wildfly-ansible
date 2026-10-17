@@ -697,3 +697,78 @@ git config --global pull.ff only
 ```
 
 Con ello, `git pull` se comporta siempre como `--ff-only`.  Además, en la plataforma (Bitbucket, Gitea, GitHub) configura `master` como rama protegida, con merges solo vía PR y estrategia "merge commit" (no squash ni rebase), para que el `--no-ff` quede garantizado por política y no solo por disciplina. [ruepprich](https://ruepprich.com/git-pull-options/)
+
+### Auto merge
+Puedes hacerlo con un workflow que **abra un PR automático** (por ejemplo `support/1.x` → `release/2.0`) y le active `auto-merge`. GitHub lo fusionará solo cuando pasen los checks y las aprobaciones requeridas. Es el equivalente en GitHub a la "automatic branch merging" de Bitbucket. [github](https://github.com/marketplace/actions/cascading-auto-merge-action)
+
+#### Cómo encaja con el escenario
+
+El auto-merge nativo de GitHub no fusiona ramas por sí mismo: fusiona **un PR** cuando se cumplen los requisitos (reviews y status checks).  Por tanto, el patrón es: [docs.github](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/automatically-merging-a-pull-request)
+
+1. Push a `support/1.x` (fix `v1.0.1`).
+2. Un workflow crea un PR hacia la siguiente rama viva (`release/2.0`, luego `release/3.0`...).
+3. El workflow habilita auto-merge con método *merge commit* (conserva el `--no-ff`).
+4. Si CI está en verde, entra solo; si hay conflicto, el PR queda abierto para resolución manual.
+
+#### Configuración previa
+
+- Activar **Settings → General → Allow auto-merge**. [zonca](https://www.zonca.dev/posts/2025-10-20-github-actions-auto-merge)
+- Proteger `master`, `release/*` y `support/*` con ruleset: PR obligatorio, status checks requeridos y, si queréis, aprobación.
+- Permitir solo "Merge commit" como método en el repo, para que sea imposible hacer squash o rebase en estas ramas.
+- Activar que Actions pueda crear y aprobar PRs. [github](https://github.com/marketplace/actions/cascading-auto-merge-action)
+- Desactivar el borrado automático de ramas head, porque algunas acciones de cascada lo requieren. [github](https://github.com/marketplace/actions/cascading-auto-merge-action)
+
+#### Workflow de propagación
+
+```yaml
+name: propagate-fix
+on:
+  push:
+    branches: ['support/**']
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  open-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Calcular rama destino
+        id: next
+        run: |
+          # Lógica propia: elegir la siguiente release viva
+          # p.ej. leer una lista ordenada de ramas activas
+          echo "target=release/2.0" >> "$GITHUB_OUTPUT"
+
+      - name: Crear PR y activar auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.PROPAGATE_TOKEN }}
+        run: |
+          gh pr create \
+            --base "${{ steps.next.outputs.target }}" \
+            --head "${{ github.ref_name }}" \
+            --title "[auto] ${{ github.ref_name }} → ${{ steps.next.outputs.target }}" \
+            --body "Propagación automática de fixes" || true
+          gh pr merge "${{ github.ref_name }}" --auto --merge
+```
+
+Notas importantes:
+
+- `gh pr merge --auto` activa auto-merge si los checks aún no han pasado; si ya pasaron, fusiona de inmediato. [cli.github](https://cli.github.com/manual/gh_pr_merge)
+- Usa un **PAT o GitHub App token** (`PROPAGATE_TOKEN`), no el `GITHUB_TOKEN`: los eventos generados con este último no disparan otros workflows, y tus checks de CI sobre el PR no se ejecutarían. Esto lo menciona también el ejemplo de Jesse Squires, que usa un token personal. [jessesquires](https://www.jessesquires.com/blog/2022/03/26/gh-action-merge-release-to-main/)
+- Hay un reporte de que `--auto` a veces fusiona con checks en curso si la rama no tiene checks requeridos configurados; por eso es imprescindible marcarlos como *required* en el ruleset. [github](https://github.com/cli/cli/issues/8514)
+
+#### Alternativa: acción de cascada
+
+Existe la [Cascading Auto-Merge Action](https://github.com/marketplace/actions/cascading-auto-merge-action), que al aprobarse un PR fusiona `release/1.1` en `development` y en todas las releases **posteriores** según semver. Encaja con tu caso de varias entregas solapadas, aunque es de terceros y poco mantenida (2022): fíjala por SHA y revísala antes de adoptarla. [github](https://github.com/marketplace/actions/cascading-auto-merge-action)
+
+#### Mi opinión
+
+- **Sí automatiza** la propagación de fixes hacia adelante (1.x → 2.0 → 3.0): es mecánica y propensa a olvidos.
+- **No automatices** la entrada a `master`: la publicación de `release/2.0` debe ser un PR con aprobación humana y `--no-ff`, no un auto-merge ciego.
+- Si varios PRs automáticos compiten por la misma rama, valora un **merge queue**, que valida cada PR contra el último estado de la rama destino; requiere que tus workflows escuchen el evento `merge_group`. [docs.github](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue)
+- Un conflicto en un auto-PR es información útil: significa que el fix de la 1.x no es trivial en la 2.0 y necesita revisión humana, no un forzado.
