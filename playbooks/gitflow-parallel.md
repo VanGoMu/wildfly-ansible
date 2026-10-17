@@ -612,3 +612,88 @@ Antes de fusionar `release/X.Y` en `main`:
 - **Mantenimiento:** `support/X.x` + `hotfix/X.Y.Z` + tag.
 - **Compatibilidad:** cherry-pick o merge explícito entre versiones, con revisión y CI.
 - **Prohibido:** rebase, reset o force-push en ramas compartidas, especialmente `main`. [git-scm](https://git-scm.com/docs/git-merge)
+
+## Detalle
+
+### Mezclas de releases
+
+#### Qué hace cada comando
+
+**`git pull --ff-only`** actualiza tu rama local desde el remoto solo si basta con avanzar el puntero (fast-forward). Si tu rama local tiene commits que el remoto no tiene (historia divergente), aborta con error en vez de crear un merge o un rebase silencioso.  Equivale a `git fetch` + `git merge --ff-only origin/<rama>`.  Consigue que nunca se altere la historia por accidente: si falla, tú decides conscientemente si hacer merge o rebase. [blog.sffc](https://blog.sffc.xyz/post/185195398930/why-you-should-use-git-pull-ff-only)
+
+**`git merge --no-ff release/2.0`** crea siempre un commit de merge con dos padres, aunque Git pudiera simplemente avanzar el puntero.  Así queda en la historia de `master` un único punto que representa "aquí entró la entrega 2.0", agrupando todos sus commits como una unidad. [stackoverflow](https://stackoverflow.com/questions/6701292/git-fast-forward-vs-no-fast-forward-merge)
+
+Combinados: `--ff-only` para **sincronizar** (sin sorpresas), `--no-ff` para **integrar entregas** (con trazabilidad).
+
+#### Ejemplo sintético
+
+Escenario: v1.0 publicada, la 2.0 ya en marcha, y aparece un fix 1.0.1 que también afecta a la 2.0.
+
+```mermaid
+gitGraph
+   commit id: "init"
+   branch develop
+   checkout develop
+   commit id: "base"
+   branch release/1.0
+   checkout release/1.0
+   commit id: "rc1-fix"
+   checkout main
+   merge release/1.0 id: "merge 1.0 (--no-ff)" tag: "v1.0.0"
+   checkout develop
+   merge release/1.0 id: "back-merge 1.0"
+   commit id: "feat-A"
+   branch release/2.0
+   checkout release/2.0
+   commit id: "feat-B"
+   checkout main
+   branch support/1.x
+   checkout support/1.x
+   commit id: "fix-bug" tag: "v1.0.1"
+   checkout release/2.0
+   merge support/1.x id: "port fix a 2.0"
+   commit id: "hardening 2.0"
+   checkout main
+   merge release/2.0 id: "merge 2.0 (--no-ff)" tag: "v2.0.0"
+```
+
+#### Comandos y justificación
+
+```bash
+# 1. Sincronizar antes de trabajar: nunca reescribe ni mezcla sin avisar
+git switch master
+git pull --ff-only
+
+# 2. Publicar la 1.0: merge commit explícito + tag
+git merge --no-ff release/1.0 -m "Release 1.0"
+git tag -a v1.0.0 -m "1.0.0"
+
+# 3. Fix de la 1.0 desde su línea de soporte
+git switch -c support/1.x v1.0.0
+git commit -am "fix-bug"
+git tag -a v1.0.1 -m "1.0.1"
+
+# 4. Portar el fix a la 2.0 (decisión consciente)
+git switch release/2.0
+git merge --no-ff support/1.x
+
+# 5. Publicar la 2.0
+git switch master
+git pull --ff-only
+git merge --no-ff release/2.0 -m "Release 2.0"
+git tag -a v2.0.0 -m "2.0.0"
+```
+
+- **Paso 1 con `--ff-only`:** si alguien empujó a `master` mientras tú tenías commits locales, el pull falla y evitas un merge accidental sobre la rama de producción.
+- **Pasos 2 y 5 con `--no-ff`:** `master` se lee como una lista de entregas (`Release 1.0`, `Release 2.0`), cada una con un commit identificable. Si la 2.0 hay que revertirla, basta `git revert -m 1 <merge>` sobre un único commit en lugar de decenas. [stackoverflow](https://stackoverflow.com/questions/6701292/git-fast-forward-vs-no-fast-forward-merge)
+- **Paso 4:** el fix de la 1.0 entra en la 2.0 por merge, así la regresión no reaparece, y es una decisión explícita, no automática.
+
+#### Recomendación de configuración
+
+Para proteger el flujo a nivel de equipo:
+
+```bash
+git config --global pull.ff only
+```
+
+Con ello, `git pull` se comporta siempre como `--ff-only`.  Además, en la plataforma (Bitbucket, Gitea, GitHub) configura `master` como rama protegida, con merges solo vía PR y estrategia "merge commit" (no squash ni rebase), para que el `--no-ff` quede garantizado por política y no solo por disciplina. [ruepprich](https://ruepprich.com/git-pull-options/)
