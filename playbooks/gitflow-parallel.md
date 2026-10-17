@@ -92,78 +92,79 @@ gitGraph
    branch develop1
    checkout develop1
    commit id: "D1: infra base"
-   branch feature/1-auth-sso
-   checkout feature/1-auth-sso
+   branch "feature/1-auth-sso"
+   checkout "feature/1-auth-sso"
    commit id: "F1: Keycloak client"
    commit id: "F1: SSO login"
    checkout develop1
-   merge feature/1-auth-sso id: "merge F1" tag: "entrega1-ready"
-
-   branch release/1.0
-   checkout release/1.0
-   commit id: "R1: bump 1.0.0-rc1"
-   commit id: "R1: fix config"
-   checkout main
-   merge release/1.0 id: "RELEASE v1.0.0" tag: "v1.0.0"
-
-   branch support/1.x
-   checkout support/1.x
-   commit id: "S1: branch from v1.0.0"
-
-   checkout develop1
-   branch hotfix/1.0.1
-   checkout hotfix/1.0.1
-   commit id: "H1: fix token refresh"
-   checkout support/1.x
-   merge hotfix/1.0.1 id: "merge hotfix 1.0.1" tag: "v1.0.1"
-
-   checkout main
-   merge hotfix/1.0.1 id: "backport hotfix to main"
+   merge "feature/1-auth-sso" id: "merge F1"
 
    branch develop2
    checkout develop2
    commit id: "D2: billing scaffold"
-   branch feature/2-billing-v2
-   checkout feature/2-billing-v2
+
+   checkout develop1
+   branch "release/1.0"
+   checkout "release/1.0"
+   commit id: "R1: bump 1.0.0-rc1"
+   commit id: "R1: fix config"
+   checkout main
+   merge "release/1.0" id: "RELEASE v1.0.0" tag: "v1.0.0"
+
+   branch "support/1.x"
+   checkout "support/1.x"
+   commit id: "S1: open support line"
+   branch "hotfix/1.0.1"
+   checkout "hotfix/1.0.1"
+   commit id: "H1: fix token refresh"
+   checkout "support/1.x"
+   merge "hotfix/1.0.1" id: "merge hotfix 1.0.1" tag: "v1.0.1"
+
+   checkout develop2
+   merge "support/1.x" id: "sync hotfix 1.0.1"
+   branch "feature/2-billing-v2"
+   checkout "feature/2-billing-v2"
    commit id: "F2: invoice model"
    commit id: "F2: payment adapter"
    checkout develop2
-   merge feature/2-billing-v2 id: "merge F2"
+   merge "feature/2-billing-v2" id: "merge F2"
 
-   branch release/2.0
-   checkout release/2.0
+   branch develop3
+   checkout develop3
+   commit id: "D3: AI assistant base"
+
+   checkout develop2
+   branch "release/2.0"
+   checkout "release/2.0"
    commit id: "R2: bump 2.0.0-rc1"
    commit id: "R2: remove v1 flag"
    checkout main
-   merge release/2.0 id: "RELEASE v2.0.0" tag: "v2.0.0"
+   merge "release/2.0" id: "RELEASE v2.0.0" tag: "v2.0.0"
 
-   branch support/2.x
-   checkout support/2.x
-   commit id: "S2: branch from v2.0.0"
-
-   checkout develop2
-   branch hotfix/2.0.1
-   checkout hotfix/2.0.1
+   branch "support/2.x"
+   checkout "support/2.x"
+   commit id: "S2: open support line"
+   branch "hotfix/2.0.1"
+   checkout "hotfix/2.0.1"
    commit id: "H2: fix rounding"
-   checkout support/2.x
-   merge hotfix/2.0.1 id: "merge hotfix 2.0.1" tag: "v2.0.1"
+   checkout "support/2.x"
+   merge "hotfix/2.0.1" id: "merge hotfix 2.0.1" tag: "v2.0.1"
+   commit id: "S2: security patch"
 
    checkout develop3
-   commit id: "D3: AI assistant base"
-   branch feature/3-ai-assistant
-   checkout feature/3-ai-assistant
+   branch "feature/3-ai-assistant"
+   checkout "feature/3-ai-assistant"
    commit id: "F3: RAG index"
    commit id: "F3: MCP tools"
    checkout develop3
-   merge feature/3-ai-assistant id: "merge F3"
+   merge "feature/3-ai-assistant" id: "merge F3"
+   merge "support/2.x" id: "propagate S2 fixes" tag: "fix-shared"
 
-   checkout support/2.x
-   commit id: "S2: security patch"
-   checkout release/3.0
-   merge support/2.x id: "propagate S2 fix" tag: "fix-shared"
-
+   branch "release/3.0"
+   checkout "release/3.0"
+   commit id: "R3: bump 3.0.0-rc1"
    checkout main
-   merge release/3.0 id: "RELEASE v3.0.0" tag: "v3.0.0"
+   merge "release/3.0" id: "RELEASE v3.0.0" tag: "v3.0.0"
 ```
 
 > **Nota sobre el grafo:** en un repositorio real, `develop2` y `develop3` normalmente se crean desde un punto común de `main` o desde `develop1`, según cuándo comenzó cada entrega. El grafo representa tres líneas de trabajo solapadas, no una secuencia estricta.
